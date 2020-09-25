@@ -1,0 +1,196 @@
+architecture: SOLOv2
+max_iters: 500000
+use_gpu: true
+snapshot_iter: 1000
+log_smooth_window: 20
+log_iter: 20
+save_dir: output
+pretrain_weights: https://paddle-imagenet-models-name.bj.bcebos.com/ResNet50_cos_pretrained.tar
+metric: COCO
+#weights: ./output/solov2_light_448_r50_fpn_8gpu_3x/model_final
+weights: ./output/solov2_light_448_r50_fpn_8gpu_3x/model_final
+num_classes: 80
+
+SOLOv2:
+  backbone: ResNet
+  fpn: FPN
+  mask_feat_head: MaskFeatHead
+  solo_head: SOLOv2Head
+
+ResNet:
+  norm_type: sync_bn
+  norm_decay: 0.
+  depth: 50
+  feature_maps: [2, 3, 4, 5]
+  freeze_at: 2
+
+FPN:
+  min_level: 2
+  max_level: 6
+  num_chan: 256
+  use_c5: false
+  spatial_scale: [0.03125, 0.0625, 0.125, 0.25]
+  has_extra_convs: false
+  reverse_out: true
+
+MaskFeatHead:
+  in_channels: 256
+  out_channels: 128
+  start_level: 0
+  end_level: 3
+  num_classes: 128         # this is mask_feature's channels, should be equal to SOLOv2Head's kernel_out_channels.
+
+SOLOv2Head:
+  num_classes: 81
+  in_channels: 256
+  num_convs: 2
+  seg_feat_channels: 256
+  strides: [8, 8, 16, 32, 32]
+  sigma: 0.2
+  kernel_out_channels: 128
+  num_grids: [40, 36, 24, 16, 12]
+  solo_loss: SOLOLoss
+  nms_cfg:
+    nms_pre: 500
+    score_thr: 0.1
+    mask_thr: 0.5
+    update_thr: 0.05
+    kernel: "gaussian"
+    sigma: 2.0
+    max_per_img: 100
+
+SOLOLoss:
+  # batch_size here should be set as same value as TrainReader.batch_size
+  batch_size: 13
+  loss_alpha: 0.25
+  loss_gamma: 2.0
+  clss_loss_weight: 1.0
+  ins_loss_weight: 3.0
+
+LearningRate:
+  base_lr: 0.01
+  schedulers:
+  - !PiecewiseDecay
+    gamma: 0.1
+    milestones: [120000, 160000]
+  - !LinearWarmup
+    start_factor: 0.3333333333333333
+    steps: 500
+
+OptimizerBuilder:
+  optimizer:
+    momentum: 0.9
+    type: Momentum
+  regularizer:
+    factor: 0.0001
+    type: L2
+
+TrainReader:
+  inputs_def:
+    fields: ['image', 'solo_target']
+  dataset:
+    !COCODataSet
+    image_dir: train2017
+    anno_path: annotations/instances_train2017.json
+    dataset_dir: ./../data/data7122/
+    with_background: false
+  sample_transforms:
+  - !DecodeImage
+    to_rgb: true
+  - !RandomFlipImage
+    prob: 0.5
+  - !ResizeImage
+    target_size: [352, 384, 416, 448, 480, 512]
+    max_size: 768
+    interp: 1
+    use_cv2: true
+  - !NormalizeImage
+    is_channel_first: false
+    is_scale: false
+    mean: [123.675, 116.28, 103.53]
+    std: [58.395, 57.12, 57.375]
+  - !Permute
+    to_bgr: false
+    channel_first: true
+  batch_transforms:
+  - !PadBatch
+    pad_to_stride: 32
+    use_padded_im_info: false
+  - !Gt2SOLOTarget
+    num_classes: 80
+    strides: [8, 8, 16, 32, 32]
+    scale_ranges: [[1, 56], [28, 112], [56, 224], [112, 448], [224, 896]]
+    sigma: 0.2
+    num_grids: [40, 36, 24, 16, 12]
+  # batch_size here should be set as same value as SOLOLoss.batch_size
+  batch_size: 13
+  shuffle: true
+  worker_num: 4
+  use_process: false
+
+EvalReader:
+  inputs_def:
+    fields: ['image', 'im_id', 'ori_shape', 'resize_shape']
+  dataset:
+    !COCODataSet
+    image_dir: val2017
+    anno_path: annotations/instances_val2017.json
+    dataset_dir: ./../data/data7122/
+    with_background: false
+  sample_transforms:
+  - !DecodeImage
+    to_rgb: true
+    with_mixup: false
+  - !ResizeImage
+    target_size: 448
+    max_size: 768
+    interp: 1
+    use_cv2: true
+  - !NormalizeImage
+    is_channel_first: false
+    is_scale: false
+    mean: [123.675, 116.28, 103.53]
+    std: [58.395, 57.12, 57.375]
+  - !Permute
+    channel_first: true
+    to_bgr: false
+  batch_transforms:
+  - !PadBatch
+    pad_to_stride: 32
+    use_padded_im_info: false
+  batch_size: 1
+  shuffle: false
+  worker_num: 2
+  use_process: false
+
+TestReader:
+  inputs_def:
+    # set image_shape if needed
+    fields: ['image', 'im_id', 'ori_shape', 'resize_shape']
+  dataset:
+    !ImageFolder
+    anno_path: annotations/instances_val2017.json
+    with_background: false
+  sample_transforms:
+  - !DecodeImage
+    to_rgb: true
+    with_mixup: false
+  - !ResizeImage
+    interp: 1
+    max_size: 768
+    target_size: 448
+    use_cv2: true
+  - !NormalizeImage
+    is_channel_first: false
+    is_scale: false
+    mean: [123.675, 116.28, 103.53]
+    std: [58.395, 57.12, 57.375]
+  - !Permute
+    channel_first: true
+    to_bgr: false
+  batch_transforms:
+  - !PadBatch
+    pad_to_stride: 32
+    use_padded_im_info: false
+  batch_size: 1
+  shuffle: false
